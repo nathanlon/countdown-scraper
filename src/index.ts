@@ -7,13 +7,15 @@ import * as cheerio from "cheerio";
 import _ from "lodash";
 import { setTimeout } from "timers/promises";
 
-import { establishCosmosDB, upsertProductToCosmosDB } from "./cosmosdb.js";
+import { establishMySQL, upsertProductToMySQL, closeMySQL } from "./mysql.js";
 import { productOverrides } from "./product-overrides.js";
 import { CategorisedUrl, DatedPrice, Product, UpsertResponse } from "./typings";
 import {
   log, colour, logProductRow, logError, readLinesFromTextFile, getTimeElapsedSince,
   logTableHeader, toTitleCase,
 } from "./utilities.js";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
+import path from "path";
 
 // Woolworths / Countdown Scraper
 // ------------------------------
@@ -37,8 +39,8 @@ export let uploadImagesMode = false;
 let headlessMode = true;
 categorisedUrls = await handleArguments(categorisedUrls);
 
-// Establish CosmosDB connection if being used
-if (databaseMode) establishCosmosDB();
+// Establish MySQL connection if being used
+if (databaseMode) await establishMySQL();
 
 // Establish playwright browser
 let browser: playwright.Browser;
@@ -53,6 +55,7 @@ await scrapeAllPageURLs();
 
 // Program End and Cleanup
 browser.close();
+if (databaseMode) await closeMySQL();
 log(
   colour.sky,
   `\nAll Pages Completed = Total Time Elapsed ${getTimeElapsedSince(startTime)} \n`
@@ -217,7 +220,7 @@ async function scrapeAllPageURLs() {
       if (databaseMode) {
         log(
           colour.blue,
-          `CosmosDB: ${perPageLogStats.newProducts} new products, ` +
+          `MySQL: ${perPageLogStats.newProducts} new products, ` +
           `${perPageLogStats.priceChanged} updated prices, ` +
           `${perPageLogStats.infoUpdated} updated info, ` +
           `${perPageLogStats.alreadyUpToDate} already up-to-date`
@@ -267,8 +270,8 @@ async function processFoundProductEntries
     );
 
     if (databaseMode && product !== undefined) {
-      // Insert or update item into azure cosmosdb
-      const response = await upsertProductToCosmosDB(product);
+      // Insert or update item into MySQL
+      const response = await upsertProductToMySQL(product);
 
       // Use response to update logging counters
       switch (response) {
@@ -288,7 +291,7 @@ async function processFoundProductEntries
           break;
       }
 
-      // Upload image to Azure Function
+      // Download image locally
       if (uploadImagesMode) {
         // Get image url using provided base url, product ID, and hi-res query parameters
         const imageUrlBase =
@@ -298,7 +301,7 @@ async function processFoundProductEntries
         const imageUrl =
           imageUrlBase + product.id + imageUrlExtensionAndQueryParams;
 
-        await uploadImageRestAPI(imageUrl!, product);
+        await downloadImageLocally(imageUrl!, product);
       }
     } else if (!databaseMode && product !== undefined) {
       // When doing a dry run, log product name - size - price in table format
@@ -314,11 +317,11 @@ async function processFoundProductEntries
   return perPageLogStats;
 }
 
-// uploadImageRestAPI()
-// --------------------
-// Send image url to an Azure Function API
+// downloadImageLocally()
+// ----------------------
+// Downloads a product image from Woolworths CDN and saves it to the local images/ directory
 
-async function uploadImageRestAPI(
+async function downloadImageLocally(
   imgUrl: string,
   product: Product
 ): Promise<boolean> {
@@ -328,43 +331,39 @@ async function uploadImageRestAPI(
     return false;
   }
 
-  // Get IMAGE_UPLOAD_FUNC_URL from env
-  // Example format:
-  // https://<func-app>.azurewebsites.net/api/ImageToS3?code=<auth-code>
-  const funcBaseUrl = process.env.IMAGE_UPLOAD_FUNC_URL;
-
-  // Check funcBaseUrl is valid
-  if (!funcBaseUrl?.includes("http")) {
-    throw Error(
-      "\nIMAGE_UPLOAD_FUNC_URL in .env is invalid. Should be in .env :\n\n" +
-      "IMAGE_UPLOAD_FUNC_URL=https://<func-app>.azurewebsites.net/api/ImageToS3?code=<auth-code>\n\n"
-    );
+  // Ensure images directory exists
+  const imagesDir = process.env.IMAGES_DIR || "images";
+  if (!existsSync(imagesDir)) {
+    mkdirSync(imagesDir, { recursive: true });
   }
-  const restUrl = `${funcBaseUrl}${product.id}&source=${imgUrl}`;
 
-  // Perform http get
-  var res = await fetch(new URL(restUrl), { method: "GET" });
-  var responseMsg = await (await res.blob()).text();
+  const imagePath = path.join(imagesDir, `${product.id}.jpg`);
 
-  if (responseMsg.includes("S3 Upload of Full-Size")) {
-    // Log for successful upload
+  // Skip if image already exists locally
+  if (existsSync(imagePath)) {
+    return true;
+  }
+
+  try {
+    const response = await fetch(imgUrl);
+    if (!response.ok) {
+      log(colour.grey, `  Image ${product.id} unavailable (HTTP ${response.status})`);
+      return false;
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    writeFileSync(imagePath, buffer);
+
     log(
       colour.grey,
-      `  New Image  : ${(product.id + ".webp").padEnd(11)} | ` +
+      `  New Image  : ${(product.id + ".jpg").padEnd(15)} | ` +
       `${product.name.padEnd(40).slice(0, 40)}`
     );
-  } else if (responseMsg.includes("already exists")) {
-    // Do not log for existing images
-  } else if (responseMsg.includes("Unable to download:")) {
-    // Log for missing images
-    log(colour.grey, `  Image ${product.id} unavailable to be downloaded`);
-  } else if (responseMsg.includes("unable to be processed")) {
-    log(colour.grey, `  Image ${product.id} unable to be processed`);
-  } else {
-    // Log any other errors that may have occurred
-    console.log(responseMsg);
+    return true;
+  } catch (error) {
+    log(colour.grey, `  Image ${product.id} download failed: ${error}`);
+    return false;
   }
-  return true;
 }
 
 // handleArguments()
