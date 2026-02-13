@@ -501,9 +501,7 @@ export function playwrightElementToProduct(
   // Find the <h3> tag with an id containing "-title"
   // This holds the product ID, name and size
   let idNameSizeH3 = $(element).find("h3").filter((i, element) => {
-    if ($(element).attr("id")?.includes("-title")) {
-      return true
-    } else return false;
+    return $(element).attr("id")?.includes("-title") ?? false;
   });
 
   let product: Product = {
@@ -546,7 +544,7 @@ export function playwrightElementToProduct(
   // Try to regex match a size section such as:
   // 100g, 150ml, 16pack, 0.5-1.5kg, tray 1kg, etc
   let tryMatchSize =
-    rawNameAndSize.match(/(tray\s\d+)|(\d+(\.\d+)?(\-\d+\.\d+)?\s?(g|kg|l|ml|pack))\b/g);
+    rawNameAndSize.match(/(tray\s\d+)|(\d+(\.\d+)?(-\d+\.\d+)?\s?(g|kg|l|ml|pack))\b/g);
 
   if (!tryMatchSize) {
     // Capitalise and set name
@@ -621,12 +619,10 @@ export function playwrightElementToProduct(
 
     // Normalize units to kg or L
     if (amountAndUnit == "100g") {
-      amount = amount * 10;
       unitPrice = unitPrice * 10;
       unit = "kg";
     }
     else if (amountAndUnit == "100mL") {
-      amount = amount * 10;
       unitPrice = unitPrice * 10;
       unit = "L";
     }
@@ -684,16 +680,13 @@ function validateProduct(product: Product): boolean {
     if (product.name.match(/\$\s\d+/)) return false;
     if (product.name.length < 4 || product.name.length > 100) return false;
     if (product.id.length < 2 || product.id.length > 20) return false;
-    if (
+    return !(
       product.currentPrice <= 0 ||
       product.currentPrice === null ||
       product.currentPrice === undefined ||
       Number.isNaN(product.currentPrice) ||
       product.currentPrice > 999
-    ) {
-      return false;
-    }
-    return true;
+    );
   } catch (error) {
     return false;
   }
