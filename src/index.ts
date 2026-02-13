@@ -611,9 +611,6 @@ export function playwrightElementToProduct(
     // Extract amount and unit, ex: 100mL
     const amountAndUnit = rawUnitPrice.split("/")[1].trim();
 
-    // Parse amount, ex: 100
-    let amount = Number.parseInt(amountAndUnit.match(/\d+/g)?.[0] || "");
-
     // Extract unit, ex: mL
     let unit = amountAndUnit.match(/\w+/g)?.[0] || ""
 
